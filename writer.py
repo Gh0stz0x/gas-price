@@ -18,7 +18,7 @@ class KmlWriter:
         Creates the writer with its metadata
         """
         self.filepath = filepath
-        self._fd = open(filepath, "w")
+        self._fd = open(filepath, "w", encoding="utf-8")
         self.name = name
         self.color = color
 
