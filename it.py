@@ -42,13 +42,13 @@ def parse_mimit(price_reader, impianti, out_dir):
             fuel_raw = row.get('descCarburante', 'Unknown').strip()
             price = row.get('prezzo', '0')
             is_self = "Self" if row.get('isSelf') == '1' else "Servito"
-            
+
             # 1. CLEAN COORDINATES (Fixes "ref position" error)
             try:
                 lat_str = str(info['lat']).replace(',', '.')
                 lon_str = str(info['lon']).replace(',', '.')
                 lat, lon = float(lat_str), float(lon_str)
-                if lat == 0 or lon == 0: continue 
+                if lat == 0 or lon == 0: continue
             except: continue
 
             # 2. DATE CONVERSION
@@ -78,7 +78,7 @@ def parse_mimit(price_reader, impianti, out_dir):
                 )
 
             w = active_writers[fuel_raw]
-            
+
             # 4. WRITE DATA
             brand = html.escape(info.get('brand', 'Unknown'))
             label = html.escape(f"{price} - {fuel_raw} ({brand})")
@@ -88,7 +88,7 @@ def parse_mimit(price_reader, impianti, out_dir):
     # Close all opened KML files
     for w in active_writers.values():
         w.close()
-    
+
     print(f"Extraction complete! Created {len(active_writers)} separate KML files.")
     print(f"Total records processed: {processed}")
 
@@ -107,7 +107,7 @@ def main(file_in, out):
         lines = r.content.decode('latin-1', errors='ignore').splitlines()
         reader = get_clean_reader(lines)
         impianti = {row['idImpianto']: {
-            'lat': row.get('Latitudine'), 
+            'lat': row.get('Latitudine'),
             'lon': row.get('Longitudine'),
             'brand': row.get('Bandiera', 'Unknown')
         } for row in reader if row.get('idImpianto')}
