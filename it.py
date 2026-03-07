@@ -175,6 +175,74 @@ def parse_mimit_gpx(price_reader, impianti, out_dir):
     print(f"Completato! File GPX: {gpx_path}")
     print(f"Record elaborati: {processed}  |  Saltati: {skipped}")
 
+
+def parse_mimit_gpx_multi(price_reader, impianti, out_dir):
+    """
+    Genera un file GPX separato per ogni macro-categoria di carburante:
+      - italy_benzina.gpx      (Benzina + Benzina Speciale)
+      - italy_gasolio.gpx      (Gasolio + Gasolio Speciale)
+      - italy_metano.gpx       (Metano / GNL)
+      - italy_gpl.gpx          (GPL)
+      - italy_hvo.gpx          (HVO)
+      - italy_idrogeno.gpx     (Idrogeno)
+      - italy_elettrico.gpx    (Elettrico)
+      - italy_altro.gpx        (non classificato)
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    processed = 0
+    skipped = 0
+
+    print("Modalità GPX Multi — un file per macro-categoria...")
+
+    gpx_multi = writer.GpxMultiWriter(out_dir, "Mimit")
+
+    for row in price_reader:
+        id_imp = row.get('idImpianto')
+        if id_imp not in impianti:
+            continue
+
+        info     = impianti[id_imp]
+        fuel_raw = row.get('descCarburante', 'Unknown').strip()
+        price    = row.get('prezzo', '0')
+        is_self  = "Self" if row.get('isSelf') == '1' else "Servito"
+
+        # Coordinate
+        try:
+            lat = float(str(info['lat']).replace(',', '.'))
+            lon = float(str(info['lon']).replace(',', '.'))
+            if lat == 0 or lon == 0:
+                skipped += 1
+                continue
+        except (ValueError, TypeError):
+            skipped += 1
+            continue
+
+        # Prezzo
+        if not is_valid_price(price):
+            skipped += 1
+            continue
+
+        # Data
+        raw_date = row.get('dtComu', '')
+        try:
+            d_p, t_p = raw_date.split(' ')
+            d, m, y  = d_p.split('/')
+            dt_iso   = f"{y}-{m}-{d}T{t_p}Z"
+        except (ValueError, AttributeError):
+            dt_iso = ""
+
+        brand = html.escape(info.get('brand', 'Unknown'))
+        label = html.escape(f"{price} - {fuel_raw} ({brand})")
+        gpx_multi.writeStation(label, dt_iso, lon, lat, is_self, fuel_raw)
+        processed += 1
+
+    files_written = gpx_multi.close()
+
+    print(f"Completato! File GPX creati:")
+    for fname, count in sorted(files_written, key=lambda x: -x[1]):
+        print(f"  {fname}  ({count} waypoint)")
+    print(f"Record elaborati: {processed}  |  Saltati: {skipped}")
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -183,16 +251,21 @@ def parse_mimit_gpx(price_reader, impianti, out_dir):
 @click.option("-i", "file_in",  default=None, help="File CSV locale dei prezzi (es. prezzo_alle_8.csv)")
 @click.option("-o", "out",      default=".",  help="Directory di output")
 @click.option("-f", "fmt",      default=None,
-              type=click.Choice(["kml", "gpx"], case_sensitive=False),
-              help="Formato di output: kml (un file per carburante) oppure gpx (file unico con gruppi OsmAnd)")
+              type=click.Choice(["kml", "gpx", "gpx-multi"], case_sensitive=False),
+              help=(
+                  "Formato di output:\n"
+                  "  kml       → un file KML per tipo di carburante\n"
+                  "  gpx       → un file GPX unico con gruppi OsmAnd\n"
+                  "  gpx-multi → un file GPX per macro-categoria (benzina, gasolio, metano, gpl...)"
+              ))
 def main(file_in, out, fmt):
 
     # Se il formato non è stato passato da CLI, chiedi interattivamente
     if fmt is None:
         fmt = click.prompt(
             "Formato di output",
-            type=click.Choice(["kml", "gpx"], case_sensitive=False),
-            default="kml"
+            type=click.Choice(["kml", "gpx", "gpx-multi"], case_sensitive=False),
+            default="gpx-multi"
         )
 
     URL_ANAGRAFICA = "https://www.mimit.gov.it/images/exportCSV/anagrafica_impianti_attivi.csv"
@@ -217,9 +290,16 @@ def main(file_in, out, fmt):
         print(f"Errore nel caricamento anagrafica: {e}")
         return
 
-    # 2. Carica prezzi (locale o online)
-    parse_fn = parse_mimit_gpx if fmt.lower() == "gpx" else parse_mimit_kml
+    # 2. Scegli funzione di parsing
+    fmt_lower = fmt.lower()
+    if fmt_lower == "gpx-multi":
+        parse_fn = parse_mimit_gpx_multi
+    elif fmt_lower == "gpx":
+        parse_fn = parse_mimit_gpx
+    else:
+        parse_fn = parse_mimit_kml
 
+    # 3. Carica prezzi (locale o online)
     if file_in:
         print(f"Leggo file locale: {file_in}")
         try:
