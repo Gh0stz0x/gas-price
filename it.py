@@ -2,20 +2,23 @@
 # -*- coding: utf-8 -*-
 
 import click
-import sys
 import requests
+import os
 import os.path
-import io
 import csv
 import writer
 import html
 
-# Utility to clean filenames (replaces spaces and slashes)
+# ---------------------------------------------------------------------------
+# Utility
+# ---------------------------------------------------------------------------
+
 def clean_filename(name):
+    """Pulisce il nome per usarlo come filename."""
     return "".join([c if c.isalnum() else "_" for c in name]).lower()
 
 def get_clean_reader(content_lines):
-    """Detects header and delimiter (| or ;) and returns a DictReader."""
+    """Rileva header e delimitatore (| o ;) e restituisce un DictReader."""
     start_index = 0
     delim = ';'
     for i, line in enumerate(content_lines[:10]):
@@ -25,108 +28,215 @@ def get_clean_reader(content_lines):
             break
     return csv.DictReader(content_lines[start_index:], delimiter=delim)
 
-def parse_mimit(price_reader, impianti, out_dir):
+def get_fuel_color(fuel_raw):
+    """Assegna un colore in base al tipo di carburante (usato solo per KML)."""
+    fuel_lower = fuel_raw.lower()
+    if "benzina" in fuel_lower:                           return "green"
+    elif "gpl" in fuel_lower:                             return "blue"
+    elif "metano" in fuel_lower or "gnl" in fuel_lower:   return "white"
+    elif "blue" in fuel_lower or "special" in fuel_lower: return "cyan"
+    elif "hvo" in fuel_lower:                             return "orange"
+    elif "idrogeno" in fuel_lower:                        return "purple"
+    elif "elettr" in fuel_lower:                          return "red"
+    else:                                                 return "yellow"
+
+def is_valid_price(price_str):
+    """Restituisce True se il prezzo è plausibile (0.01 – 5.00 €)."""
+    try:
+        p = float(price_str.replace(',', '.'))
+        return 0.01 <= p <= 5.00
+    except (ValueError, TypeError):
+        return False
+
+# ---------------------------------------------------------------------------
+# Core parsing
+# ---------------------------------------------------------------------------
+
+def parse_mimit_kml(price_reader, impianti, out_dir):
+    """Genera un file KML per ogni tipo di carburante (comportamento originale)."""
     os.makedirs(out_dir, exist_ok=True)
-
-    # Dictionary to keep track of active KML writers
-    # key: fuel name, value: KmlWriter object
     active_writers = {}
-
     processed = 0
-    print("Starting KML generation by fuel type...")
+    skipped = 0
+
+    print("Modalità KML — un file per tipo di carburante...")
 
     for row in price_reader:
         id_imp = row.get('idImpianto')
-        if id_imp in impianti:
-            info = impianti[id_imp]
-            fuel_raw = row.get('descCarburante', 'Unknown').strip()
-            price = row.get('prezzo', '0')
-            is_self = "Self" if row.get('isSelf') == '1' else "Servito"
+        if id_imp not in impianti:
+            continue
 
-            # 1. CLEAN COORDINATES (Fixes "ref position" error)
-            try:
-                lat_str = str(info['lat']).replace(',', '.')
-                lon_str = str(info['lon']).replace(',', '.')
-                lat, lon = float(lat_str), float(lon_str)
-                if lat == 0 or lon == 0: continue
-            except: continue
+        info     = impianti[id_imp]
+        fuel_raw = row.get('descCarburante', 'Unknown').strip()
+        price    = row.get('prezzo', '0')
+        is_self  = "Self" if row.get('isSelf') == '1' else "Servito"
 
-            # 2. DATE CONVERSION
-            raw_date = row.get('dtComu', '')
-            try:
-                d_p, t_p = raw_date.split(' ')
-                d, m, y = d_p.split('/')
-                dt_iso = f"{y}-{m}-{d}T{t_p}Z"
-            except: dt_iso = ""
+        # Coordinate
+        try:
+            lat = float(str(info['lat']).replace(',', '.'))
+            lon = float(str(info['lon']).replace(',', '.'))
+            if lat == 0 or lon == 0:
+                skipped += 1
+                continue
+        except (ValueError, TypeError):
+            skipped += 1
+            continue
 
-            # 3. DYNAMIC WRITER SELECTION
-            # If we haven't seen this fuel type yet, create a new KML file for it
-            if fuel_raw not in active_writers:
-                fname = f"{clean_filename(fuel_raw)}.kml"
-                # Assign a color based on some keywords
-                color = "yellow" # Default (Diesel)
-                if "benzina" in fuel_raw.lower(): color = "green"
-                elif "gpl" in fuel_raw.lower(): color = "blue"
-                elif "metano" in fuel_raw.lower() or "gnl" in fuel_raw.lower(): color = "white"
-                elif "blue" in fuel_raw.lower() or "special" in fuel_raw.lower(): color = "cyan"
+        # Prezzo
+        if not is_valid_price(price):
+            skipped += 1
+            continue
 
-                active_writers[fuel_raw] = writer.KmlWriter(
-                    os.path.join(out_dir, fname),
-                    f"Italy - {fuel_raw}",
-                    "Mimit",
-                    color
-                )
+        # Data
+        raw_date = row.get('dtComu', '')
+        try:
+            d_p, t_p = raw_date.split(' ')
+            d, m, y  = d_p.split('/')
+            dt_iso   = f"{y}-{m}-{d}T{t_p}Z"
+        except (ValueError, AttributeError):
+            dt_iso = ""
 
-            w = active_writers[fuel_raw]
+        # Writer KML
+        if fuel_raw not in active_writers:
+            fname = f"{clean_filename(fuel_raw)}.kml"
+            color = get_fuel_color(fuel_raw)
+            active_writers[fuel_raw] = writer.KmlWriter(
+                os.path.join(out_dir, fname),
+                f"Italy - {fuel_raw}",
+                "Mimit",
+                color
+            )
 
-            # 4. WRITE DATA
-            brand = html.escape(info.get('brand', 'Unknown'))
-            label = html.escape(f"{price} - {fuel_raw} ({brand})")
-            w.writeStation(label, dt_iso, lon, lat, is_self)
-            processed += 1
+        brand = html.escape(info.get('brand', 'Unknown'))
+        label = html.escape(f"{price} - {fuel_raw} ({brand})")
+        active_writers[fuel_raw].writeStation(label, dt_iso, lon, lat, is_self)
+        processed += 1
 
-    # Close all opened KML files
     for w in active_writers.values():
         w.close()
 
-    print(f"Extraction complete! Created {len(active_writers)} separate KML files.")
-    print(f"Total records processed: {processed}")
+    print(f"Completato! Creati {len(active_writers)} file KML.")
+    print(f"Record elaborati: {processed}  |  Saltati: {skipped}")
+
+
+def parse_mimit_gpx(price_reader, impianti, out_dir):
+    """Genera un singolo file GPX con gruppi OsmAnd per tipo di carburante."""
+    os.makedirs(out_dir, exist_ok=True)
+    processed = 0
+    skipped = 0
+
+    print("Modalità GPX — file unico con gruppi OsmAnd...")
+
+    gpx_path = os.path.join(out_dir, "italy_carburanti.gpx")
+    gpx = writer.GpxWriter(gpx_path, "Italy - Carburanti", "Mimit")
+
+    for row in price_reader:
+        id_imp = row.get('idImpianto')
+        if id_imp not in impianti:
+            continue
+
+        info     = impianti[id_imp]
+        fuel_raw = row.get('descCarburante', 'Unknown').strip()
+        price    = row.get('prezzo', '0')
+        is_self  = "Self" if row.get('isSelf') == '1' else "Servito"
+
+        # Coordinate
+        try:
+            lat = float(str(info['lat']).replace(',', '.'))
+            lon = float(str(info['lon']).replace(',', '.'))
+            if lat == 0 or lon == 0:
+                skipped += 1
+                continue
+        except (ValueError, TypeError):
+            skipped += 1
+            continue
+
+        # Prezzo
+        if not is_valid_price(price):
+            skipped += 1
+            continue
+
+        # Data
+        raw_date = row.get('dtComu', '')
+        try:
+            d_p, t_p = raw_date.split(' ')
+            d, m, y  = d_p.split('/')
+            dt_iso   = f"{y}-{m}-{d}T{t_p}Z"
+        except (ValueError, AttributeError):
+            dt_iso = ""
+
+        brand = html.escape(info.get('brand', 'Unknown'))
+        label = html.escape(f"{price} - {fuel_raw} ({brand})")
+        gpx.writeStation(label, dt_iso, lon, lat, is_self, fuel_raw)
+        processed += 1
+
+    gpx.close()
+
+    print(f"Completato! File GPX: {gpx_path}")
+    print(f"Record elaborati: {processed}  |  Saltati: {skipped}")
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 @click.command()
-@click.option("-i", "file_in", help="Local price CSV file (e.g. prezzo_alle_8.csv)")
-@click.option("-o", "out", default=".", help="Output directory")
+@click.option("-i", "file_in",  default=None, help="File CSV locale dei prezzi (es. prezzo_alle_8.csv)")
+@click.option("-o", "out",      default=".",  help="Directory di output")
+@click.option("-f", "fmt",      default=None,
+              type=click.Choice(["kml", "gpx"], case_sensitive=False),
+              help="Formato di output: kml (un file per carburante) oppure gpx (file unico con gruppi OsmAnd)")
+def main(file_in, out, fmt):
 
-def main(file_in, out):
+    # Se il formato non è stato passato da CLI, chiedi interattivamente
+    if fmt is None:
+        fmt = click.prompt(
+            "Formato di output",
+            type=click.Choice(["kml", "gpx"], case_sensitive=False),
+            default="kml"
+        )
+
     URL_ANAGRAFICA = "https://www.mimit.gov.it/images/exportCSV/anagrafica_impianti_attivi.csv"
-    URL_PREZZI = "https://www.mimit.gov.it/images/exportCSV/prezzo_alle_8.csv"
+    URL_PREZZI     = "https://www.mimit.gov.it/images/exportCSV/prezzo_alle_8.csv"
 
-    # 1. Load Metadata
-    print("Fetching station metadata...")
+    # 1. Carica anagrafica impianti
+    print("Scarico anagrafica impianti...")
     try:
         r = requests.get(URL_ANAGRAFICA, timeout=20)
         lines = r.content.decode('latin-1', errors='ignore').splitlines()
         reader = get_clean_reader(lines)
-        impianti = {row['idImpianto']: {
-            'lat': row.get('Latitudine'),
-            'lon': row.get('Longitudine'),
-            'brand': row.get('Bandiera', 'Unknown')
-        } for row in reader if row.get('idImpianto')}
+        impianti = {
+            row['idImpianto']: {
+                'lat':   row.get('Latitudine'),
+                'lon':   row.get('Longitudine'),
+                'brand': row.get('Bandiera', 'Unknown')
+            }
+            for row in reader if row.get('idImpianto')
+        }
+        print(f"Impianti caricati: {len(impianti)}")
     except Exception as e:
-        print(f"Error loading metadata: {e}")
+        print(f"Errore nel caricamento anagrafica: {e}")
         return
 
-    # 2. Process Prices
+    # 2. Carica prezzi (locale o online)
+    parse_fn = parse_mimit_gpx if fmt.lower() == "gpx" else parse_mimit_kml
+
     if file_in:
-        print(f"Reading local file: {file_in}")
-        with open(file_in, 'r', encoding='utf-8', errors='ignore') as f:
-            price_reader = get_clean_reader(f.readlines())
-            parse_mimit(price_reader, impianti, out)
+        print(f"Leggo file locale: {file_in}")
+        try:
+            with open(file_in, 'r', encoding='utf-8', errors='ignore') as f:
+                price_reader = get_clean_reader(f.readlines())
+                parse_fn(price_reader, impianti, out)
+        except Exception as e:
+            print(f"Errore nella lettura del file locale: {e}")
     else:
-        print("Downloading online prices...")
-        r = requests.get(URL_PREZZI, timeout=20)
-        lines = r.content.decode('latin-1', errors='ignore').splitlines()
-        price_reader = get_clean_reader(lines)
-        parse_mimit(price_reader, impianti, out)
+        print("Scarico prezzi online...")
+        try:
+            r = requests.get(URL_PREZZI, timeout=20)
+            lines = r.content.decode('latin-1', errors='ignore').splitlines()
+            price_reader = get_clean_reader(lines)
+            parse_fn(price_reader, impianti, out)
+        except Exception as e:
+            print(f"Errore nel download prezzi: {e}")
 
 if __name__ == '__main__':
     main()
