@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 
 
-# Mappa colori → codice HEX per il GPX OsmAnd
+# Colormap → HEX code for OsmAnd GPX
 COLOR_HEX = {
     "green":  "#00AA00",
     "yellow": "#CCAA00",
@@ -94,10 +94,9 @@ class KmlWriter:
 
 
 # ---------------------------------------------------------------------------
-# Definizione macro-categorie e sottocategorie per GPX multi-file
+# Defining macro-categories and subcategories for multi-file GPX
 # ---------------------------------------------------------------------------
 
-# Mappa: categoria normalizzata → macro-categoria (= nome file GPX)
 MACRO_CATEGORY = {
     "Benzina":          "Benzina",
     "Benzina Speciale": "Benzina",
@@ -111,7 +110,6 @@ MACRO_CATEGORY = {
     "Altro":            "Altro",
 }
 
-# Colore per ogni macro-categoria
 MACRO_COLOR = {
     "Benzina":   COLOR_HEX["green"],
     "Gasolio":   COLOR_HEX["yellow"],
@@ -123,7 +121,6 @@ MACRO_COLOR = {
     "Altro":     COLOR_HEX["yellow"],
 }
 
-# Sottocategorie per ogni macro-categoria con i loro colori
 SUBCATEGORY_COLORS = {
     "Benzina": {
         "Benzina":          COLOR_HEX["green"],
@@ -153,28 +150,18 @@ SUBCATEGORY_COLORS = {
     },
 }
 
-# Mappa di normalizzazione: parole chiave → sottocategoria
 FUEL_MAP = [
-    # Benzina speciale (prima di benzina generica)
     (["v-power",  "excellium 9", "supreme ben", "especial ben",
       "ultimate", "momentum", "evo ben", "racing"], "Benzina Speciale"),
-    # Benzina generica
     (["benzina", "super sp", "super 95", "super 98", "gasolio senza", "sp95", "sp98"], "Benzina"),
-    # Gasolio speciale (prima di gasolio generico)
     (["v-power d", "excellium d", "supreme d", "blue diesel", "iq diesel",
       "energy diesel", "excelium d", "oro", "premium", "prestazional",
       "speciale", "artic", "alpin", "invernale", "hvo diesel"], "Gasolio Speciale"),
-    # Gasolio generico
     (["gasolio", "diesel", "blu", "gasol"], "Gasolio"),
-    # GPL
     (["gpl", "autogas", "lpg"], "GPL"),
-    # Metano / GNL
     (["metano", "gnl", "gnc", "cng", "lng"], "Metano / GNL"),
-    # HVO
     (["hvo"], "HVO"),
-    # Idrogeno
     (["idrogeno", "hydrogen", "h2"], "Idrogeno"),
-    # Elettrico
     (["elettr", "electric", "ev ", "ricaric"], "Elettrico"),
 ]
 
@@ -191,20 +178,12 @@ def normalize_fuel(fuel_raw):
 class GpxMultiWriter:
     """
     Gestisce la scrittura di più file GPX separati per macro-categoria.
-    Ogni file contiene le sottocategorie come gruppi OsmAnd.
-
-    Uso:
-        mw = GpxMultiWriter(out_dir, "Mimit")
-        mw.writeStation(label, dt_iso, lon, lat, vending, fuel_raw)
-        mw.close()  # scrive tutti i file
     """
 
     def __init__(self, out_dir, source):
         self.out_dir = out_dir
         self.source = source
         os.makedirs(out_dir, exist_ok=True)
-        # Accumula waypoint per macro-categoria
-        # { macro: [(lat, lon, label, subcategory, vending, dt_iso), ...] }
         self._data = {}
 
     def __enter__(self):
@@ -214,13 +193,13 @@ class GpxMultiWriter:
         self.close()
         return False
 
-    def writeStation(self, label, dt_iso, lon, lat, vending, fuel_raw):
-        """Accumula il waypoint nella macro-categoria corretta."""
+    def writeStation(self, label, dt_iso, lon, lat, vending, fuel_raw, color=None):
+        """Accumula il waypoint nella macro-categoria corretta, supportando il colore dinamico."""
         subcategory = normalize_fuel(fuel_raw)
         macro = MACRO_CATEGORY.get(subcategory, "Altro")
         if macro not in self._data:
             self._data[macro] = []
-        self._data[macro].append((lat, lon, label, subcategory, vending, dt_iso))
+        self._data[macro].append((lat, lon, label, subcategory, vending, dt_iso, color))
 
     def close(self):
         """Scrive un file GPX per ogni macro-categoria."""
@@ -231,8 +210,6 @@ class GpxMultiWriter:
             filename = f"italy_{macro.lower().replace(' / ', '_').replace(' ', '_')}.gpx"
             filepath = os.path.join(self.out_dir, filename)
             subcategory_colors = SUBCATEGORY_COLORS.get(macro, {"Altro": COLOR_HEX["yellow"]})
-
-            # Sottocategorie effettivamente usate in questo file
             used_subcategories = {wp[3] for wp in waypoints}
 
             with open(filepath, "w", encoding="utf-8") as fd:
@@ -248,9 +225,11 @@ class GpxMultiWriter:
     <desc>Generated from {self.source} data on {now}</desc>
   </metadata>
 """)
-                # Waypoints
-                for lat, lon, label, subcategory, vending, dt_iso in waypoints:
-                    color_hex = subcategory_colors.get(subcategory, MACRO_COLOR.get(macro, COLOR_HEX["yellow"]))
+                # Color-managed waypoints
+                for lat, lon, label, subcategory, vending, dt_iso, dynamic_color in waypoints:
+                    # If dynamic_color is passed, use that (gradient), otherwise use the default
+                    color_hex = dynamic_color if dynamic_color else subcategory_colors.get(subcategory, MACRO_COLOR.get(macro, COLOR_HEX["yellow"]))
+
                     time_tag = f"\n    <time>{dt_iso}</time>" if dt_iso else ""
                     fd.write(f"""  <wpt lat="{lat}" lon="{lon}">
     <name>{label}</name>{time_tag}
@@ -264,7 +243,7 @@ class GpxMultiWriter:
   </wpt>
 """)
 
-                # Gruppi OsmAnd (solo sottocategorie usate)
+                # OsmAnd Groups
                 fd.write("  <extensions>\n    <osmand:points_groups>\n")
                 for subcat, color_hex in subcategory_colors.items():
                     if subcat in used_subcategories:
@@ -279,12 +258,9 @@ class GpxMultiWriter:
         return files_written
 
 
-# Mantieni compatibilità con il vecchio GpxWriter (file unico)
 class GpxWriter:
     """
     Write a gas prices GPX file with OsmAnd waypoint groups.
-    Un singolo file con tutti i carburanti raggruppati per categoria.
-    (Mantenuto per compatibilità - usa GpxMultiWriter per file separati)
     """
 
     GROUPS = {
@@ -314,13 +290,9 @@ class GpxWriter:
         self.close()
         return False
 
-    @staticmethod
-    def normalize_fuel(fuel_raw):
-        return normalize_fuel(fuel_raw)
-
-    def writeStation(self, label, dt_iso, lon, lat, vending, fuel_raw):
-        category = self.normalize_fuel(fuel_raw)
-        self._waypoints.append((lat, lon, label, category, vending, dt_iso))
+    def writeStation(self, label, dt_iso, lon, lat, vending, fuel_raw, color=None):
+        category = normalize_fuel(fuel_raw)
+        self._waypoints.append((lat, lon, label, category, vending, dt_iso, color))
 
     def close(self):
         if self._fd.closed:
@@ -332,23 +304,20 @@ class GpxWriter:
         self._fd.write(f"""<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="pododoo"
      xmlns="http://www.topografix.com/GPX/1/1"
-     xmlns:osmand="https://osmand.net"
-     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-     xsi:schemaLocation="http://www.topografix.com/GPX/1/1
-       http://www.topografix.com/GPX/1/1/gpx.xsd">
+     xmlns:osmand="https://osmand.net">
   <metadata>
     <name>{self.name}</name>
     <desc>Generated from {self.source} data on {now}</desc>
   </metadata>
 """)
 
-        for lat, lon, label, category, vending, dt_iso in self._waypoints:
-            color_hex = self.GROUPS.get(category, (COLOR_HEX["yellow"], "fuel"))[0]
+        for lat, lon, label, category, vending, dt_iso, dynamic_color in self._waypoints:
+            color_hex = dynamic_color if dynamic_color else self.GROUPS.get(category, (COLOR_HEX["yellow"], "fuel"))[0]
             time_tag = f"\n    <time>{dt_iso}</time>" if dt_iso else ""
             self._fd.write(f"""  <wpt lat="{lat}" lon="{lon}">
     <name>{label}</name>{time_tag}
     <type>{category}</type>
-    <desc>Modalità: {vending} / Modo: {vending}</desc>
+    <desc>Modalità: {vending}</desc>
     <extensions>
       <osmand:color>{color_hex}</osmand:color>
       <osmand:icon>fuel</osmand:icon>
